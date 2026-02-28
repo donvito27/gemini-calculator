@@ -1,29 +1,47 @@
 import streamlit as st
+import google.generativeai as genai
+import sqlite3
 
-st.title("Gemini API Profit Calculator 2026")
+# --- 1. Setup ---
+st.title("Secure Gemini Service")
 
-# Sidebar inputs
-st.sidebar.header("User Stats")
-users = st.sidebar.number_input("Number of Users", value=100)
-prompts = st.sidebar.slider("Prompts per User/Month", 10, 1000, 500)
-sub_price = st.sidebar.number_input("Your Subscription Price ($)", value=20.0)
+# Configure the API key from secrets
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+else:
+    st.error("API Key not found in secrets.")
+    st.stop()
 
-# Model selection
-model = st.selectbox("Choose Gemini Model", ["3.1 Pro", "3 Flash", "2.5 Flash-Lite"])
+# --- 2. Database Setup for Usage Tracking ---
+conn = sqlite3.connect('user_usage.db')
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS usage (user_id TEXT PRIMARY KEY, prompts_used INTEGER)''')
+conn.commit()
 
-# Pricing Logic
-prices = {
-    "3.1 Pro": {"in": 2.00, "out": 12.00},
-    "3 Flash": {"in": 0.50, "out": 3.00},
-    "2.5 Flash-Lite": {"in": 0.10, "out": 0.40}
-}
+# --- 3. UI and Logic ---
+user_id = st.text_input("Enter your unique User ID")
+prompt = st.text_input("Enter your prompt")
+MAX_PROMPTS = 500
 
-# Calculations
-cost_per_user = (prompts * 800 / 1_000_000 * prices[model]["in"]) + (prompts * 1200 / 1_000_000 * prices[model]["out"])
-total_revenue = users * sub_price
-total_cost = cost_per_user * users
-profit = total_revenue - total_cost
+if st.button("Generate") and prompt and user_id:                
+    # Check usage
+    c.execute('SELECT prompts_used FROM usage WHERE user_id = ?', (user_id,))
+    data = c.fetchone()
+    
+    current_usage = data[0] if data else 0                
 
-# Display
-st.metric("Estimated Monthly Profit", f"${profit:,.2f}")
-st.write(f"Your Google bill will be roughly **${total_cost:,.2f}** per month.")
+    if current_usage < MAX_PROMPTS:
+        # Call API
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        st.write(response.text)
+        
+        # Update usage
+        new_usage = current_usage + 1
+        c.execute('INSERT OR REPLACE INTO usage (user_id, prompts_used) VALUES (?, ?)', (user_id, new_usage))
+        conn.commit()
+        st.write(f"Prompts used: {new_usage}/{MAX_PROMPTS}")
+    else:
+        st.error("Usage limit reached. Please purchase more credits.")
+
+conn.close()
