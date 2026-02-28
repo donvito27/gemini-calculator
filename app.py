@@ -1,28 +1,66 @@
-# --- INPUT YOUR NUMBERS HERE ---
-sub_price = 20.0        # Price you charge user per month
-max_prompts = 500       # Prompts included in subscription
-extra_bundle_price = 5.0 # Price for extra prompts
-extra_bundle_size = 100  # Prompts in extra bundle
+import streamlit as st
+import google.generativeai as genai
+import sqlite3
 
-# --- ESTIMATED USAGE ---
-actual_prompts = 600    # How many prompts they actually used
-# -------------------------------
+# --- 1. Setup ---
+st.title("Gemini Profit Service")
 
-# Gemini 3 Flash Costs (approximate)
-cost_per_prompt = 0.004
+# Configure Key
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+else:
+    st.error("API Key not found in secrets.")
+    st.stop()
 
-# Calculations
-base_cost = actual_prompts * cost_per_prompt
-extra_revenue = 0
+# --- 2. Database Setup ---
+conn = sqlite3.connect('user_usage.db')
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS usage 
+             (user_id TEXT PRIMARY KEY, prompts_used INTEGER, top_up_limit INTEGER DEFAULT 0)''')
+conn.commit()
 
-if actual_prompts > max_prompts:
-    extra_needed = actual_prompts - max_prompts
-    bundles_needed = (extra_needed // extra_bundle_size) + 1
-    extra_revenue = bundles_needed * extra_bundle_price
+# --- 3. UI and Logic ---
+st.sidebar.header("User Control")
+user_id = st.sidebar.text_input("Enter your unique User ID")
+MAX_PROMPTS = 500
 
-total_revenue = sub_price + extra_revenue
-profit = total_revenue - base_cost
+if user_id:
+    # Check current usage
+    c.execute('SELECT prompts_used, top_up_limit FROM usage WHERE user_id = ?', (user_id,))
+    data = c.fetchone()
+    
+    prompts_used = data[0] if data else 0
+    extra_allowed = data[1] if data else 0
+    total_allowed = MAX_PROMPTS + extra_allowed
 
-print(f"Total Revenue: ${total_revenue:.2f}")
-print(f"Google Cost: ${base_cost:.2f}")
-print(f"Net Profit: ${profit:.2f}")
+    st.write(f"### Usage: {prompts_used} / {total_allowed} prompts used")
+
+    prompt = st.text_input("Enter your prompt")
+
+    if st.button("Generate") and prompt:
+        if prompts_used < total_allowed:
+            # Call API
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            st.write(response.text)
+            
+            # Update usage
+            new_usage = prompts_used + 1
+            c.execute('INSERT OR REPLACE INTO usage (user_id, prompts_used, top_up_limit) VALUES (?, ?, ?)', (user_id, new_usage, extra_allowed))
+            conn.commit()
+            st.rerun() # Refresh to update count
+        else:
+            st.error("Usage limit reached. Please purchase more credits.")
+
+    # --- 4. Top-Up Button (Simulating a purchase) ---
+    st.write("---")
+    st.write("Need more prompts?")
+    if st.button("Buy 100 Extra Prompts ($5)"):
+        # In a real app, you would process payment here
+        new_top_up = extra_allowed + 100
+        c.execute('INSERT OR REPLACE INTO usage (user_id, prompts_used, top_up_limit) VALUES (?, ?, ?)', (user_id, prompts_used, new_top_up))
+        conn.commit()
+        st.success("100 prompts added!")
+        st.rerun()
+
+conn.close()
